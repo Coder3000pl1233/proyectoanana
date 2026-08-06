@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import type {
   ClientToServerEvents,
   ServerToClientEvents,
   Piece,
+  Player,
   RoomState,
   RoomSummary,
 } from "@puzzle/shared";
@@ -81,6 +82,107 @@ const jigsawMask = (p: Piece, rows: number, cols: number) => {
   maskCache.set(cacheKey, mask);
   return mask;
 };
+
+type PieceNodeProps = {
+  piece: Piece;
+  rows: number;
+  cols: number;
+  imageUrl: string;
+  groupSize: number;
+  owner?: Player;
+  isTop: boolean;
+  isSnapped: boolean;
+  register: (id: string, node: HTMLDivElement | null) => void;
+  onBegin: (event: React.PointerEvent, piece: Piece, groupSize: number) => void;
+};
+
+const PieceNode = memo(function PieceNode({
+  piece,
+  rows,
+  cols,
+  imageUrl,
+  groupSize,
+  owner,
+  isTop,
+  isSnapped,
+  register,
+  onBegin,
+}: PieceNodeProps) {
+  const setNode = useCallback(
+    (node: HTMLDivElement | null) => register(piece.id, node),
+    [piece.id, register],
+  );
+  const mask = jigsawMask(piece, rows, cols);
+  // La máscara reserva 15/100 por lado. Agrandamos la pieza para que
+  // el cuerpo central (70/100) siga ocupando exactamente su celda.
+  const padX = (piece.width * 15) / 70;
+  const padY = (piece.height * 15) / 70;
+  const visualWidth = piece.width + padX * 2;
+  const visualHeight = piece.height + padY * 2;
+  const imageWidth = piece.width * cols;
+  const imageHeight = piece.height * rows;
+  const backgroundX =
+    ((-piece.col * piece.width + padX) / (visualWidth - imageWidth)) * 100;
+  const backgroundY =
+    ((-piece.row * piece.height + padY) / (visualHeight - imageHeight)) * 100;
+
+  return (
+    <div
+      ref={setNode}
+      data-piece={piece.id}
+      className={`piece ${piece.status} ${isSnapped ? "snap" : ""}`}
+      onPointerDown={(event) => onBegin(event, piece, groupSize)}
+      style={{
+        left: `${(piece.x - padX) / 10}%`,
+        top: `${(piece.y - padY) / 7}%`,
+        width: `${visualWidth / 10}%`,
+        height: `${visualHeight / 7}%`,
+        backgroundImage: `url(${serverUrl(imageUrl)})`,
+        backgroundSize: `${(imageWidth / visualWidth) * 100}% ${(imageHeight / visualHeight) * 100}%`,
+        backgroundPosition: `${backgroundX}% ${backgroundY}%`,
+        maskImage: mask,
+        WebkitMaskImage: mask,
+        zIndex:
+          groupSize === 1
+            ? piece.status === "moving"
+              ? 20
+              : isTop
+                ? 15
+                : 10
+            : piece.status === "moving"
+              ? 5
+              : 4,
+        outlineColor: owner?.color,
+      }}
+    >
+      {owner && (
+        <span style={{ background: owner.color }}>{owner.name}</span>
+      )}
+    </div>
+  );
+});
+
+type DragMember = Pick<Piece, "id" | "x" | "y" | "width" | "height">;
+type DragSession = {
+  id: string;
+  groupId: string;
+  dx: number;
+  dy: number;
+  locked: boolean;
+  released: boolean;
+  seq: number;
+  anchorX: number;
+  anchorY: number;
+  currentX: number;
+  currentY: number;
+  visualDx: number;
+  visualDy: number;
+  members: DragMember[];
+  lastSentAt: number;
+  frame?: number;
+};
+
+const MOVE_SEND_INTERVAL = 50;
 export function Game({
   roomId,
   initialName,
@@ -101,19 +203,97 @@ export function Game({
   const socket = useRef<TypedSocket | null>(null),
     meRef = useRef("");
   const board = useRef<HTMLDivElement>(null),
-    drag = useRef<
-      | {
-          id: string;
-          dx: number;
-          dy: number;
-          locked: boolean;
-          released: boolean;
-          seq: number;
-        }
-      | undefined
-    >(undefined);
+    drag = useRef<DragSession | undefined>(undefined),
+    piecesRef = useRef<Piece[]>([]),
+    pieceElements = useRef(new Map<string, HTMLDivElement>());
+
+  piecesRef.current = state?.pieces || [];
+
+  const registerPiece = useCallback(
+    (id: string, node: HTMLDivElement | null) => {
+      if (node) pieceElements.current.set(id, node);
+      else pieceElements.current.delete(id);
+    },
+    [],
+  );
+
+  const point = useCallback((event: React.PointerEvent) => {
+    const bounds = board.current!.getBoundingClientRect();
+    return {
+      x: ((event.clientX - bounds.left) / bounds.width) * 1000,
+      y: ((event.clientY - bounds.top) / bounds.height) * 700,
+    };
+  }, []);
+
+  const paintDrag = useCallback((session: DragSession) => {
+    if (session.frame !== undefined) return;
+    session.frame = window.requestAnimationFrame(() => {
+      session.frame = undefined;
+      const bounds = board.current?.getBoundingClientRect();
+      if (!bounds) return;
+      const translateX = (session.visualDx / 1000) * bounds.width;
+      const translateY = (session.visualDy / 700) * bounds.height;
+      board.current?.classList.add("drag-active");
+      for (const member of session.members) {
+        const node = pieceElements.current.get(member.id);
+        if (!node) continue;
+        node.classList.add("drag-local");
+        node.style.transform = `translate3d(${translateX}px, ${translateY}px, 0)`;
+      }
+    });
+  }, []);
+
+  const clearDragPaint = useCallback((session: DragSession) => {
+    if (session.frame !== undefined) {
+      window.cancelAnimationFrame(session.frame);
+      session.frame = undefined;
+    }
+    board.current?.classList.remove("drag-active");
+    for (const member of session.members) {
+      const node = pieceElements.current.get(member.id);
+      if (!node) continue;
+      node.classList.remove("drag-local");
+      node.style.removeProperty("transform");
+    }
+  }, []);
+
+  const commitDrag = useCallback(
+    (session: DragSession) => {
+      if (drag.current !== session) return;
+      const positions = new Map(
+        session.members.map((member) => [
+          member.id,
+          { x: member.x + session.visualDx, y: member.y + session.visualDy },
+        ]),
+      );
+      setState((old) =>
+        old
+          ? {
+              ...old,
+              pieces: old.pieces.map((piece) => {
+                const position = positions.get(piece.id);
+                return position ? { ...piece, ...position } : piece;
+              }),
+            }
+          : old,
+      );
+      socket.current?.emit("piece:release", {
+        roomId,
+        pieceId: session.id,
+        x: session.currentX,
+        y: session.currentY,
+        clientSeq: ++session.seq,
+      });
+      drag.current = undefined;
+      window.requestAnimationFrame(() => clearDragPaint(session));
+    },
+    [clearDragPaint, roomId],
+  );
   useEffect(() => {
-    const s = io(SERVER_URL || undefined) as TypedSocket;
+    const s = io(SERVER_URL || undefined, {
+      transports: ["websocket", "polling"],
+      tryAllTransports: true,
+    }) as TypedSocket;
     socket.current = s;
     const patch = (piece: Piece) =>
       setState((old) =>
@@ -150,15 +330,8 @@ export function Game({
         return;
       pending.locked = true;
       if (pending.released) {
-        s.emit("piece:release", {
-          roomId,
-          pieceId: piece.id,
-          x: piece.x,
-          y: piece.y,
-          clientSeq: ++pending.seq,
-        });
-        drag.current = undefined;
-      }
+        commitDrag(pending);
+      } else paintDrag(pending);
     };
     s.on("room:state", setState);
     s.on("player:joined", (p) =>
@@ -181,7 +354,10 @@ export function Game({
       confirmPendingLock(p);
     });
     s.on("piece:lock-denied", (id) => {
-      if (drag.current?.id === id) drag.current = undefined;
+      if (drag.current?.id === id) {
+        clearDragPaint(drag.current);
+        drag.current = undefined;
+      }
       setMessage("Esa pieza ya está en movimiento.");
     });
     s.on("piece:moved", patch);
@@ -208,6 +384,7 @@ export function Game({
     });
     s.on("puzzle:completed", () => setComplete(true));
     const joinRoom = () => {
+      if (drag.current) clearDragPaint(drag.current);
       drag.current = undefined;
       const token = localStorage.getItem(`token-${roomId}`) || undefined;
       s.emit(
@@ -224,94 +401,102 @@ export function Game({
     };
     s.on("connect", joinRoom);
     return () => {
+      if (drag.current) clearDragPaint(drag.current);
       s.emit("room:leave");
       s.disconnect();
     };
-  }, [roomId, initialName]);
-  const groupSizes = new Map<string, number>();
-  for (const piece of state?.pieces || []) {
-    const id = piece.groupId || piece.id;
-    groupSizes.set(id, (groupSizes.get(id) || 0) + 1);
-  }
+  }, [roomId, initialName, clearDragPaint, commitDrag, paintDrag]);
+  const groupSizes = useMemo(() => {
+    const sizes = new Map<string, number>();
+    for (const piece of state?.pieces || []) {
+      const id = piece.groupId || piece.id;
+      sizes.set(id, (sizes.get(id) || 0) + 1);
+    }
+    return sizes;
+  }, [state?.pieces]);
   const placed = Math.max(0, ...groupSizes.values()),
     progress = state && placed > 1 ? Math.round((placed / state.pieces.length) * 100) : 0;
   const players = useMemo(
     () => new Map(state?.players.map((p) => [p.id, p]) || []),
-    [state],
+    [state?.players],
   );
-  const point = (e: React.PointerEvent) => {
-    const r = board.current!.getBoundingClientRect();
-    return {
-      x: ((e.clientX - r.left) / r.width) * 1000,
-      y: ((e.clientY - r.top) / r.height) * 700,
-    };
-  };
-  const down = (e: React.PointerEvent, p: Piece) => {
-    if (p.status === "moving" || !socket.current) return;
-    if ((groupSizes.get(p.groupId || p.id) || 1) === 1) setTopPiece(p.id);
+  const down = useCallback((e: React.PointerEvent, p: Piece, groupSize: number) => {
+    if (p.status === "moving" || !socket.current || drag.current) return;
+    if (groupSize === 1) setTopPiece(p.id);
     const q = point(e);
+    const groupId = p.groupId || p.id;
     drag.current = {
       id: p.id,
+      groupId,
       dx: q.x - p.x,
       dy: q.y - p.y,
       locked: false,
       released: false,
       seq: 0,
+      anchorX: p.x,
+      anchorY: p.y,
+      currentX: p.x,
+      currentY: p.y,
+      visualDx: 0,
+      visualDy: 0,
+      members: piecesRef.current
+        .filter((piece) => (piece.groupId || piece.id) === groupId)
+        .map(({ id, x, y, width, height }) => ({ id, x, y, width, height })),
+      lastSentAt: 0,
     };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     socket.current.emit("piece:lock", { roomId, pieceId: p.id });
-  };
-  const move = (e: React.PointerEvent) => {
+  }, [point, roomId]);
+  const move = useCallback((e: React.PointerEvent) => {
     const d = drag.current;
-    if (!d?.locked || !state) return;
-    const p = state.pieces.find((x) => x.id === d.id)!;
-    const q = point(e),
-      x = q.x - d.dx,
-      y = q.y - d.dy,
-      dx = x - p.x,
-      dy = y - p.y,
-      groupId = p.groupId || p.id;
-    setState((old) =>
-      old
-        ? {
-            ...old,
-            pieces: old.pieces.map((v) =>
-              (v.groupId || v.id) === groupId
-                ? { ...v, x: v.x + dx, y: v.y + dy }
-                : v,
-            ),
-          }
-        : old,
+    if (!d) return;
+    const q = point(e);
+    const desiredDx = q.x - d.dx - d.anchorX;
+    const desiredDy = q.y - d.dy - d.anchorY;
+    const minDx = Math.max(
+      ...d.members.map((member) => (member.width * 15) / 70 - member.x),
     );
+    const maxDx = Math.min(
+      ...d.members.map(
+        (member) =>
+          1000 - member.width - (member.width * 15) / 70 - member.x,
+      ),
+    );
+    const minDy = Math.max(
+      ...d.members.map((member) => (member.height * 15) / 70 - member.y),
+    );
+    const maxDy = Math.min(
+      ...d.members.map(
+        (member) =>
+          700 - member.height - (member.height * 15) / 70 - member.y,
+      ),
+    );
+    d.visualDx = Math.max(minDx, Math.min(maxDx, desiredDx));
+    d.visualDy = Math.max(minDy, Math.min(maxDy, desiredDy));
+    d.currentX = d.anchorX + d.visualDx;
+    d.currentY = d.anchorY + d.visualDy;
+    if (!d.locked) return;
+    paintDrag(d);
+    const now = performance.now();
+    if (now - d.lastSentAt < MOVE_SEND_INTERVAL) return;
+    d.lastSentAt = now;
     socket.current?.emit("piece:move", {
       roomId,
-      pieceId: p.id,
-      x,
-      y,
+      pieceId: d.id,
+      x: d.currentX,
+      y: d.currentY,
       clientSeq: ++d.seq,
     });
-  };
-  const up = () => {
+  }, [paintDrag, point, roomId]);
+  const up = useCallback(() => {
     const d = drag.current;
     if (!d) return;
     if (!d.locked) {
       d.released = true;
       return;
     }
-    if (!state) {
-      drag.current = undefined;
-      return;
-    }
-    const p = state.pieces.find((x) => x.id === d.id)!;
-    socket.current?.emit("piece:release", {
-      roomId,
-      pieceId: p.id,
-      x: p.x,
-      y: p.y,
-      clientSeq: ++d.seq,
-    });
-    drag.current = undefined;
-  };
+    commitDrag(d);
+  }, [commitDrag]);
   if (!state)
     return (
       <main className="center-state">
@@ -423,55 +608,20 @@ export function Game({
                 p.movedBy && pieceGroupSize === 1
                   ? players.get(p.movedBy)
                   : undefined;
-              const mask = jigsawMask(p, state.rows, state.cols);
-              // La máscara reserva 15/100 por lado. Agrandamos la pieza para que
-              // el cuerpo central (70/100) siga ocupando exactamente su celda.
-              const padX = (p.width * 15) / 70;
-              const padY = (p.height * 15) / 70;
-              const visualWidth = p.width + padX * 2;
-              const visualHeight = p.height + padY * 2;
-              const imageWidth = p.width * state.cols;
-              const imageHeight = p.height * state.rows;
-              const backgroundX =
-                ((-p.col * p.width + padX) / (visualWidth - imageWidth)) * 100;
-              const backgroundY =
-                ((-p.row * p.height + padY) / (visualHeight - imageHeight)) *
-                100;
               return (
-                <div
+                <PieceNode
                   key={p.id}
-                  data-piece={p.id}
-                  className={`piece ${p.status} ${snappedPiece === p.id ? "snap" : ""}`}
-                  onPointerDown={(e) => down(e, p)}
-                  style={{
-                    left: `${(p.x - padX) / 10}%`,
-                    top: `${(p.y - padY) / 7}%`,
-                    width: `${visualWidth / 10}%`,
-                    height: `${visualHeight / 7}%`,
-                    backgroundImage: `url(${serverUrl(state.imageUrl)})`,
-                    backgroundSize: `${(imageWidth / visualWidth) * 100}% ${(imageHeight / visualHeight) * 100}%`,
-                    backgroundPosition: `${backgroundX}% ${backgroundY}%`,
-                    maskImage: mask,
-                    WebkitMaskImage: mask,
-                    zIndex:
-                      pieceGroupSize === 1
-                        ? p.status === "moving"
-                          ? 20
-                          : p.id === topPiece
-                            ? 15
-                            : 10
-                        : p.status === "moving"
-                          ? 5
-                          : 4,
-                    outlineColor: owner?.color,
-                  }}
-                >
-                  {owner && (
-                    <span style={{ background: owner.color }}>
-                      {owner.name}
-                    </span>
-                  )}
-                </div>
+                  piece={p}
+                  rows={state.rows}
+                  cols={state.cols}
+                  imageUrl={state.imageUrl}
+                  groupSize={pieceGroupSize}
+                  owner={owner}
+                  isTop={p.id === topPiece}
+                  isSnapped={p.id === snappedPiece}
+                  register={registerPiece}
+                  onBegin={down}
+                />
               );
             })}
             </div>

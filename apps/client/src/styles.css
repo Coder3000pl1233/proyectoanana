@@ -479,6 +479,8 @@ input:focus {
 .piece {
   position: absolute;
   background-repeat: no-repeat;
+  contain: layout style;
+  backface-visibility: hidden;
   filter: drop-shadow(-1.5px -1.5px 1px #ffffffcc)
     drop-shadow(2px 3px 2px #17132977) drop-shadow(4px 7px 5px #17132944);
   cursor: grab;
@@ -515,6 +517,20 @@ input:focus {
 .board.dense .piece {
   transition: none;
   filter: drop-shadow(1px 2px 1px #17132955);
+}
+.piece.drag-local {
+  z-index: 30 !important;
+  transition: none !important;
+  will-change: transform;
+}
+.board.dense.drag-active .piece:not(.drag-local) {
+  filter: none;
+}
+.board.dense .piece.drag-local {
+  filter: none;
+}
+.board.dense.drag-active .piece:not(.drag-local)::after {
+  display: none;
 }
 .board.dense .piece::after {
   background: linear-gradient(145deg, #ffffff35, transparent 25%, #17132925);

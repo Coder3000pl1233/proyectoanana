@@ -24,6 +24,16 @@ const fetchServer = async (path: string, options?: RequestInit) => {
 };
 const roomId = location.pathname.match(/^\/room\/([A-Za-z0-9_-]+)$/)?.[1];
 export function App() {
+  useEffect(() => {
+    // Despierta el servicio gratuito de Render mientras la persona prepara
+    // la sala, para que crear o abrir el tablero no pague toda la espera.
+    const controller = new AbortController();
+    fetch(serverUrl("/api/health"), {
+      signal: controller.signal,
+      cache: "no-store",
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, []);
   return (
     <>
       <header className="top">
