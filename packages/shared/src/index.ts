@@ -63,6 +63,7 @@ export interface ServerToClientEvents {
   "piece:moved": (piece: Piece) => void;
   "piece:released": (piece: Piece) => void;
   "piece:placed": (piece: Piece) => void;
+  "pieces:updated": (pieces: Piece[]) => void;
   "puzzle:completed": () => void;
 }
 export interface ClientToServerEvents {
@@ -79,6 +80,7 @@ export interface ClientToServerEvents {
   "piece:lock": (payload: LockPayload) => void;
   "piece:move": (payload: MovePayload) => void;
   "piece:release": (payload: ReleasePayload) => void;
+  "pieces:reorder": (payload: { roomId: string }) => void;
 }
 export const DIFFICULTIES: Record<
   Difficulty,

@@ -389,6 +389,14 @@ input:focus {
   font-weight: 600;
   cursor: pointer;
 }
+.sidebar-tools {
+  display: grid;
+  gap: 8px;
+  margin-top: auto;
+}
+.sidebar-tools .ghost {
+  margin-top: 0;
+}
 .play-area {
   position: relative;
   min-width: 0;
@@ -403,6 +411,9 @@ input:focus {
   padding: 14px;
   border-radius: 20px;
   box-shadow: inset 0 2px 10px #00000014;
+}
+.board-viewport {
+  display: contents;
 }
 .board {
   width: 100%;
@@ -422,6 +433,48 @@ input:focus {
   height: 100%;
   object-fit: fill;
   opacity: 0.18;
+}
+.reference-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #17152bd9;
+  backdrop-filter: blur(6px);
+  animation: fade 0.2s ease-out;
+}
+.reference-dialog {
+  position: relative;
+  width: min(900px, 94vw);
+  max-height: 90dvh;
+  padding: 8px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 80px #0009;
+}
+.reference-dialog img {
+  display: block;
+  width: 100%;
+  max-height: calc(90dvh - 16px);
+  border-radius: 10px;
+  object-fit: contain;
+}
+.reference-close {
+  position: absolute;
+  top: -14px;
+  right: -14px;
+  z-index: 2;
+  width: 42px;
+  height: 42px;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  background: #24213a;
+  color: #fff;
+  font-size: 27px;
+  line-height: 1;
+  cursor: pointer;
 }
 .piece {
   position: absolute;
@@ -459,6 +512,17 @@ input:focus {
     inset -3px -3px 4px #17132945;
   pointer-events: none;
 }
+.board.dense .piece {
+  transition: none;
+  filter: drop-shadow(1px 2px 1px #17132955);
+}
+.board.dense .piece::after {
+  background: linear-gradient(145deg, #ffffff35, transparent 25%, #17132925);
+  box-shadow: none;
+}
+.board.dense .piece.moving {
+  filter: brightness(1.05) drop-shadow(2px 4px 2px #17132977);
+}
 .piece.moving {
   cursor: grabbing;
   outline-style: solid;
@@ -490,11 +554,11 @@ input:focus {
 }
 .piece span {
   position: absolute;
-  top: 20%;
+  top: 50%;
   left: 50%;
   z-index: 2;
   max-width: 68%;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   overflow: hidden;
   padding: 3px 7px;
   border-radius: 10px;
@@ -517,6 +581,9 @@ input:focus {
   font-size: 13px;
 }
 .mobile-progress {
+  display: none;
+}
+.rotate-device {
   display: none;
 }
 .celebration {
@@ -633,27 +700,96 @@ input:focus {
   }
   .play-area {
     height: 100%;
-    padding: 15px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 10px;
+    overflow: auto;
+    padding: 10px 15px 18px;
   }
   .mobile-progress {
-    position: absolute;
-    top: 8px;
-    left: 16px;
-    right: 16px;
+    position: relative;
+    top: auto;
+    left: auto;
+    right: auto;
     z-index: 30;
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
     background: #fffe;
-    padding: 8px 12px;
-    border-radius: 9px;
+    padding: 9px;
+    border: 1px solid #dedbe3;
+    border-radius: 12px;
+    box-shadow: 0 4px 14px #211d3514;
     font-size: 12px;
   }
+  .mobile-status,
+  .mobile-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .mobile-status span {
+    color: #5f5a70;
+  }
+  .mobile-actions button {
+    flex: 1;
+    min-height: 38px;
+    border: 1px solid #d7d3e2;
+    border-radius: 9px;
+    background: #fff;
+    color: #312c4d;
+    font-size: 12px;
+    font-weight: 700;
+    touch-action: manipulation;
+  }
+  .mobile-actions button:active {
+    background: #eeeaff;
+    transform: scale(0.98);
+  }
   .board-shell {
-    width: 100%;
+    width: 140%;
+    max-width: none;
+    flex: 0 0 auto;
     padding: 8px;
+    border-radius: 14px;
+  }
+  .board-viewport {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-radius: 14px;
+    scrollbar-width: thin;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .board {
+    touch-action: pan-x pan-y;
+  }
+  .piece {
+    touch-action: none;
   }
   .create-card {
     padding: 24px;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .sidebar {
+    display: none !important;
+  }
+  .game {
+    grid-template-columns: 1fr;
+  }
+  .reference-modal {
+    padding: 10px;
+  }
+  .reference-dialog {
+    width: min(94vw, calc(90dvh * 1.428));
   }
 }
 @media (max-width: 450px) {
@@ -668,15 +804,113 @@ input:focus {
   }
   .top {
     height: 62px;
+    padding: 0 16px;
+  }
+  .brand {
+    font-size: 17px;
   }
   .game {
     height: calc(100vh - 62px);
   }
   .play-area {
+    gap: 8px;
     padding: 8px;
   }
   .board-shell {
     transform: rotate(0deg);
+  }
+}
+
+@media (max-width: 800px) and (orientation: portrait) {
+  .rotate-device {
+    position: fixed;
+    inset: 62px 0 0;
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 30px;
+    background: linear-gradient(160deg, #f7f5f1, #ebe7f5);
+    color: #24213a;
+    text-align: center;
+  }
+  .rotate-device h2 {
+    margin: 24px 0 8px;
+    font: 800 28px Manrope;
+  }
+  .rotate-device p {
+    max-width: 280px;
+    margin: 0;
+    color: #6c6878;
+    line-height: 1.5;
+  }
+  .phone-icon {
+    width: 54px;
+    height: 88px;
+    padding: 5px;
+    border: 4px solid #6c5ce7;
+    border-radius: 12px;
+    animation: turn-phone 1.8s ease-in-out infinite;
+  }
+  .phone-icon i {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: 5px;
+    background: linear-gradient(145deg, #6c5ce7, #ff7557);
+  }
+  @keyframes turn-phone {
+    0%, 25% { transform: rotate(0); }
+    65%, 100% { transform: rotate(90deg); }
+  }
+}
+
+@media (max-width: 950px) and (orientation: landscape) {
+  .top {
+    height: 44px;
+    padding: 0 14px;
+  }
+  .brand {
+    font-size: 15px;
+  }
+  .brand span {
+    width: 25px;
+    height: 25px;
+  }
+  .game {
+    height: calc(100dvh - 44px);
+  }
+  .play-area {
+    position: relative;
+    display: block;
+    overflow: hidden;
+    padding: 4px;
+  }
+  .mobile-progress {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    width: 190px;
+    padding: 7px;
+    background: #fffffff0;
+    backdrop-filter: blur(8px);
+  }
+  .mobile-actions button {
+    min-height: 32px;
+    font-size: 11px;
+  }
+  .board-viewport {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+  .board-shell {
+    width: min(calc(100vw - 8px), calc((100dvh - 52px) * 1.428));
+    padding: 6px;
   }
 }
 

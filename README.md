@@ -1,4 +1,4 @@
-# Puzzle Juntos
+# Proyecto Anana
 
 MVP funcional para crear un puzzle desde una imagen y resolverlo colaborativamente, sin cuentas y en tiempo real. Incluye dificultades de 12, 24, 48 y 100 piezas. La interfaz está íntegramente en español y funciona con mouse, táctil y desde 360 px.
 

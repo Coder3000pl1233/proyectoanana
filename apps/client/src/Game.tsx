@@ -43,7 +43,11 @@ const edgeKind = (
   if (edge === "bottom") return sign("horizontal", row, col);
   return -sign("vertical", row, col - 1);
 };
+const maskCache = new Map<string, string>();
 const jigsawMask = (p: Piece, rows: number, cols: number) => {
+  const cacheKey = `${p.row}:${p.col}:${rows}:${cols}`;
+  const cached = maskCache.get(cacheKey);
+  if (cached) return cached;
   const top = p.row === 0 ? 0 : edgeKind(p.row, p.col, "top"),
     right = p.col === cols - 1 ? 0 : edgeKind(p.row, p.col, "right"),
     bottom = p.row === rows - 1 ? 0 : edgeKind(p.row, p.col, "bottom"),
@@ -73,7 +77,9 @@ const jigsawMask = (p: Piece, rows: number, cols: number) => {
         ? "L15 60 C15 56 12 56 9 58 C2 63 0 58 0 50 C0 42 2 37 9 42 C12 44 15 44 15 40 L15 15"
         : "L15 60 C15 56 18 56 21 58 C28 63 30 58 30 50 C30 42 28 37 21 42 C18 44 15 44 15 40 L15 15";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="none"><path fill="white" d="M15 15 ${t} L85 15 ${r} L85 85 ${b} L15 85 ${l} Z"/></svg>`;
-  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  const mask = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  maskCache.set(cacheKey, mask);
+  return mask;
 };
 export function Game({
   roomId,
@@ -89,13 +95,21 @@ export function Game({
     [message, setMessage] = useState(""),
     [showRef, setShowRef] = useState(false),
     [copied, setCopied] = useState(false),
+    [topPiece, setTopPiece] = useState<string>(),
     [snappedPiece, setSnappedPiece] = useState<string>(),
     [complete, setComplete] = useState(summary.completed);
   const socket = useRef<TypedSocket | null>(null),
     meRef = useRef("");
   const board = useRef<HTMLDivElement>(null),
     drag = useRef<
-      | { id: string; dx: number; dy: number; locked: boolean; seq: number }
+      | {
+          id: string;
+          dx: number;
+          dy: number;
+          locked: boolean;
+          released: boolean;
+          seq: number;
+        }
       | undefined
     >(undefined);
   useEffect(() => {
@@ -112,6 +126,40 @@ export function Game({
             }
           : old,
       );
+    const patchMany = (pieces: Piece[]) => {
+      const incoming = new Map(pieces.map((piece) => [piece.id, piece]));
+      setState((old) =>
+        old
+          ? {
+              ...old,
+              pieces: old.pieces.map((piece) => {
+                const next = incoming.get(piece.id);
+                return next && next.version >= piece.version ? next : piece;
+              }),
+            }
+          : old,
+      );
+    };
+    const confirmPendingLock = (piece: Piece) => {
+      const pending = drag.current;
+      if (
+        pending?.id !== piece.id ||
+        piece.status !== "moving" ||
+        piece.movedBy !== meRef.current
+      )
+        return;
+      pending.locked = true;
+      if (pending.released) {
+        s.emit("piece:release", {
+          roomId,
+          pieceId: piece.id,
+          x: piece.x,
+          y: piece.y,
+          clientSeq: ++pending.seq,
+        });
+        drag.current = undefined;
+      }
+    };
     s.on("room:state", setState);
     s.on("player:joined", (p) =>
       setState((old) =>
@@ -130,14 +178,20 @@ export function Game({
     );
     s.on("piece:locked", (p) => {
       patch(p);
-      if (drag.current?.id === p.id)
-        drag.current.locked = p.movedBy === meRef.current;
+      confirmPendingLock(p);
     });
     s.on("piece:lock-denied", (id) => {
       if (drag.current?.id === id) drag.current = undefined;
       setMessage("Esa pieza ya está en movimiento.");
     });
     s.on("piece:moved", patch);
+    s.on("pieces:updated", (pieces) => {
+      patchMany(pieces);
+      const pendingId = drag.current?.id;
+      if (!pendingId) return;
+      const pendingPiece = pieces.find((piece) => piece.id === pendingId);
+      if (pendingPiece) confirmPendingLock(pendingPiece);
+    });
     s.on("piece:released", patch);
     s.on("piece:placed", (p) => {
       patch(p);
@@ -153,18 +207,22 @@ export function Game({
       setMessage("¡Pieza encajada!");
     });
     s.on("puzzle:completed", () => setComplete(true));
-    const token = localStorage.getItem(`token-${roomId}`) || undefined;
-    s.emit(
-      "room:join",
-      { roomId, name: initialName, playerToken: token },
-      (r) => {
-        if (r.ok) {
-          localStorage.setItem(`token-${roomId}`, r.token!);
-          meRef.current = r.playerId!;
-          setMe(r.playerId!);
-        } else setMessage(r.error || "No pudimos entrar.");
-      },
-    );
+    const joinRoom = () => {
+      drag.current = undefined;
+      const token = localStorage.getItem(`token-${roomId}`) || undefined;
+      s.emit(
+        "room:join",
+        { roomId, name: initialName, playerToken: token },
+        (r) => {
+          if (r.ok) {
+            localStorage.setItem(`token-${roomId}`, r.token!);
+            meRef.current = r.playerId!;
+            setMe(r.playerId!);
+          } else setMessage(r.error || "No pudimos entrar.");
+        },
+      );
+    };
+    s.on("connect", joinRoom);
     return () => {
       s.emit("room:leave");
       s.disconnect();
@@ -190,12 +248,14 @@ export function Game({
   };
   const down = (e: React.PointerEvent, p: Piece) => {
     if (p.status === "moving" || !socket.current) return;
+    if ((groupSizes.get(p.groupId || p.id) || 1) === 1) setTopPiece(p.id);
     const q = point(e);
     drag.current = {
       id: p.id,
       dx: q.x - p.x,
       dy: q.y - p.y,
       locked: false,
+      released: false,
       seq: 0,
     };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -233,7 +293,12 @@ export function Game({
   };
   const up = () => {
     const d = drag.current;
-    if (!d?.locked || !state) {
+    if (!d) return;
+    if (!d.locked) {
+      d.released = true;
+      return;
+    }
+    if (!state) {
       drag.current = undefined;
       return;
     }
@@ -256,6 +321,11 @@ export function Game({
     );
   return (
     <main className="game">
+      <div className="rotate-device" role="status">
+        <div className="phone-icon"><i /></div>
+        <h2>Gir&aacute el teléfono</h2>
+        <p>Usá la pantalla en horizontal para ver el tablero más grande.</p>
+      </div>
       <aside className="sidebar">
         <div>
           <div className="eyebrow">SALA EN VIVO</div>
@@ -301,32 +371,58 @@ export function Game({
             ))}
           </div>
         </section>
-        <button className="ghost" onClick={() => setShowRef((x) => !x)}>
-          {showRef ? "Ocultar" : "Mostrar"} imagen de referencia
-        </button>
+        <div className="sidebar-tools">
+          <button
+            className="ghost"
+            onClick={() => socket.current?.emit("pieces:reorder", { roomId })}
+          >
+            Ordenar fichas
+          </button>
+          <button className="ghost" onClick={() => setShowRef(true)}>
+            Ver imagen de referencia
+          </button>
+        </div>
       </aside>
       <section className="play-area">
         <div className="mobile-progress">
-          <b>{progress}% completado</b>
-          <span>{state.players.length} jugando</span>
+          <div className="mobile-status">
+            <b>{progress}% completado</b>
+            <span>{state.players.length} jugando</span>
+          </div>
+          <div className="mobile-actions">
+            <button onClick={() => setShowRef(true)}>
+              Ver guía
+            </button>
+            <button
+              onClick={() => socket.current?.emit("pieces:reorder", { roomId })}
+            >
+              Ordenar
+            </button>
+            <button
+              onClick={async () => {
+                await navigator.clipboard.writeText(location.href);
+                setCopied(true);
+              }}
+            >
+              {copied ? "¡Copiado!" : "Compartir"}
+            </button>
+          </div>
         </div>
-        <div className="board-shell">
-          <div
+        <div className="board-viewport">
+          <div className="board-shell">
+            <div
             ref={board}
-            className="board"
+            className={`board ${state.pieces.length >= 100 ? "dense" : ""}`}
             onPointerMove={move}
             onPointerUp={up}
             onPointerCancel={up}
           >
-            {showRef && (
-              <img
-                className="reference"
-                src={serverUrl(state.imageUrl)}
-                alt="Referencia del puzzle"
-              />
-            )}
             {state.pieces.map((p) => {
-              const owner = p.movedBy ? players.get(p.movedBy) : undefined;
+              const pieceGroupSize = groupSizes.get(p.groupId || p.id) || 1;
+              const owner =
+                p.movedBy && pieceGroupSize === 1
+                  ? players.get(p.movedBy)
+                  : undefined;
               const mask = jigsawMask(p, state.rows, state.cols);
               // La máscara reserva 15/100 por lado. Agrandamos la pieza para que
               // el cuerpo central (70/100) siga ocupando exactamente su celda.
@@ -358,11 +454,15 @@ export function Game({
                     maskImage: mask,
                     WebkitMaskImage: mask,
                     zIndex:
-                      p.status === "moving"
-                        ? 20
-                        : p.status === "placed"
-                          ? 1
-                          : 5,
+                      pieceGroupSize === 1
+                        ? p.status === "moving"
+                          ? 20
+                          : p.id === topPiece
+                            ? 15
+                            : 10
+                        : p.status === "moving"
+                          ? 5
+                          : 4,
                     outlineColor: owner?.color,
                   }}
                 >
@@ -374,10 +474,31 @@ export function Game({
                 </div>
               );
             })}
+            </div>
           </div>
         </div>
         {message && <div className="toast">{message}</div>}
       </section>
+      {showRef && (
+        <div
+          className="reference-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Imagen de referencia"
+          onClick={() => setShowRef(false)}
+        >
+          <div className="reference-dialog" onClick={(event) => event.stopPropagation()}>
+            <button
+              className="reference-close"
+              onClick={() => setShowRef(false)}
+              aria-label="Cerrar imagen de referencia"
+            >
+              ×
+            </button>
+            <img src={serverUrl(state.imageUrl)} alt="Referencia del puzzle" />
+          </div>
+        </div>
+      )}
       {complete && (
         <div className="celebration">
           <div className="confetti-rain" aria-hidden="true">

@@ -28,7 +28,7 @@ export function App() {
     <>
       <header className="top">
         <a href="/" className="brand">
-          <span>◩</span> Puzzle Juntos
+          <span>◩</span> Proyecto Anana
         </a>
         <span className="tagline">Cada pieza, entre todos.</span>
       </header>
