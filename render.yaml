@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: puuus-api-danielwalls
+    runtime: node
+    plan: free
+    autoDeploy: true
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: CLIENT_ORIGIN
+        value: https://proyectoanana.netlify.app
+      - key: DATABASE_PATH
+        value: ./data/puzzle.db
+      - key: UPLOAD_DIR
+        value: ./uploads
+      - key: MAX_IMAGE_MB
+        value: "8"

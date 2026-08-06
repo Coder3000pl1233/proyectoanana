@@ -1,0 +1,12 @@
+[build]
+  command = "npm run build -w @puzzle/shared && npm run build -w @puzzle/client"
+  publish = "apps/client/dist"
+
+[build.environment]
+  NODE_VERSION = "24"
+  VITE_SERVER_URL = "https://puuus-api-danielwalls-of0f.onrender.com"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
